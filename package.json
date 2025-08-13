@@ -2,7 +2,7 @@
     "name": "apexdoc",
     "displayName": "ApexDoc",
     "description": "An lightweight extension to generate ApexDoc comments with the click of a button.",
-    "version": "0.0.6",
+    "version": "0.0.7",
     "license": "MIT",
     "engines": {
         "vscode": "^1.103.0"
