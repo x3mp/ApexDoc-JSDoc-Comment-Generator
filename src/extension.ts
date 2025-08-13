@@ -48,11 +48,36 @@ async function insertDoc(kind: string) {
   const snippet = new vscode.SnippetString(snippetBody.join("\n"));
 
   // Insert ABOVE the current line
-  const pos = editor.selection.active;
-  const lineAbove = pos.line > 0 ? pos.line : 0;
-  const insertPos = new vscode.Position(lineAbove, 0);
+  const declLine = findDeclarationLine(editor, kind);
+  const insertPos = new vscode.Position(declLine, 0);
 
   await editor.insertSnippet(snippet, insertPos);
+}
+
+function findDeclarationLine(editor: vscode.TextEditor, kind: string): number {
+  const doc = editor.document;
+  const cursorLine = editor.selection.active.line;
+
+  const patterns: Record<string, RegExp> = {
+    class:
+      /^\s*(public|private|global|protected)?\s*(virtual|abstract)?\s*(class|interface|enum)\s+\w+/i,
+    method:
+      /^\s*(public|private|global|protected)?\s*(static)?\s*[\w<>\[\]]+\s+\w+\s*\(.*\)\s*({|;)?\s*$/i,
+    property:
+      /^\s*(public|private|global|protected)?\s*[\w<>\[\]]+\s+\w+\s*\{\s*get;\s*set;\s*\}/i,
+  };
+
+  const regex = patterns[kind];
+  if (!regex) return cursorLine;
+
+  for (let i = cursorLine; i >= 0; i--) {
+    const line = doc.lineAt(i).text;
+    if (regex.test(line)) {
+      return i;
+    }
+  }
+
+  return cursorLine;
 }
 
 function getMethodParams(editor: vscode.TextEditor): string[] {
