@@ -2,27 +2,27 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 
-type Kind = "class" | "method" | "constructor" | "property" | "enumValue";
+type ApexKind = "class" | "method" | "constructor" | "property" | "enumValue";
+type JsKind = "jsClass" | "jsFunction" | "jsMethod" | "jsProperty";
 
 export function activate(context: vscode.ExtensionContext) {
-  // One command
+  // One command for both Apex & JS/TS
   context.subscriptions.push(
-    vscode.commands.registerCommand("apexdoc.generate", () => generateApexDoc())
+    vscode.commands.registerCommand("apexdoc.generate", () => generateDoc())
   );
 
-  // Tiny completions inside /** ... */ for @tags and inline links
-  const provider = vscode.languages.registerCompletionItemProvider(
+  // Apex: completion for ApexDoc tags & inline link helpers
+  const apexProvider = vscode.languages.registerCompletionItemProvider(
     "apex",
     {
       provideCompletionItems(document, position) {
         if (!insideDocBlock(document, position.line)) return;
 
-        const decl = detectKindAndLine(document, position.line);
-        const kind: Kind = decl?.kind ?? "class";
+        const decl = detectApexKindAndLine(document, position.line);
+        const kind: ApexKind = decl?.kind ?? "class";
 
         const items: vscode.CompletionItem[] = [];
-
-        // Common tags
+        // keep @see out of snippets, but suggest it here
         const common = [
           "@description",
           "@see",
@@ -34,67 +34,102 @@ export function activate(context: vscode.ExtensionContext) {
         ];
         for (const tag of common) items.push(tagItem(tag));
 
-        // Kind-specific tags
         if (kind === "method" || kind === "constructor") {
           ["@param", "@return", "@throws"].forEach((t) =>
             items.push(tagItem(t))
           );
-        } else if (kind === "property") {
+        } else if (
+          kind === "property" ||
+          kind === "enumValue" ||
+          kind === "class"
+        ) {
+          // keep minimal here
           items.push(tagItem("@description"));
-          items.push(tagItem("@see"));
-        } else if (kind === "enumValue") {
-          items.push(tagItem("@description"));
-          items.push(tagItem("@see"));
         }
 
         // Inline link helpers
-        const dblAngle = new vscode.CompletionItem(
-          "<<TypeName>>",
-          vscode.CompletionItemKind.Snippet
-        );
-        dblAngle.insertText = new vscode.SnippetString("<<${1:TypeName}>>");
-        items.push(dblAngle);
-
-        const jlink = new vscode.CompletionItem(
-          "{@link TypeName}",
-          vscode.CompletionItemKind.Snippet
-        );
-        jlink.insertText = new vscode.SnippetString("{@link ${1:TypeName}}");
-        items.push(jlink);
-
+        items.push(snippetItem("<<TypeName>>", "<<${1:TypeName}>>"));
+        items.push(snippetItem("{@link TypeName}", "{@link ${1:TypeName}}"));
         return items;
       },
     },
     "@",
     "{",
-    "<" // trigger characters
+    "<"
   );
-  context.subscriptions.push(provider);
+  context.subscriptions.push(apexProvider);
+
+  // JS/TS (LWC): JSDoc completions
+  const jsTsProvider = vscode.languages.registerCompletionItemProvider(
+    [{ language: "javascript" }, { language: "typescript" }],
+    {
+      provideCompletionItems(document, position) {
+        if (!insideDocBlock(document, position.line)) return;
+
+        const items: vscode.CompletionItem[] = [];
+        [
+          "@description",
+          "@param",
+          "@returns",
+          "@throws",
+          "@see",
+          "@example",
+          "@deprecated",
+        ].forEach((tag) => {
+          items.push(tagItem(tag));
+        });
+        items.push(snippetItem("{@link TypeOrURL}", "{@link ${1:TypeOrURL}}"));
+        return items;
+      },
+    },
+    "@",
+    "{"
+  );
+  context.subscriptions.push(jsTsProvider);
 }
 
 export function deactivate() {}
 
-/* ---------------- core ---------------- */
+/* =================== MAIN COMMAND =================== */
 
-async function generateApexDoc(): Promise<void> {
+async function generateDoc(): Promise<void> {
   const editor = vscode.window.activeTextEditor;
   if (!editor) return;
 
   const doc = editor.document;
+  const lang = doc.languageId;
   const here = editor.selection.active.line;
 
-  const detected = detectKindAndLine(doc, here);
+  if (lang === "apex") {
+    await generateApexDoc(editor, here);
+  } else if (lang === "javascript" || lang === "typescript") {
+    await generateJsDoc(editor, here);
+  } else {
+    vscode.window.showInformationMessage(
+      "This command supports Apex, JavaScript, and TypeScript files."
+    );
+  }
+}
+
+/* =================== APEX =================== */
+
+async function generateApexDoc(editor: vscode.TextEditor, here: number) {
+  const doc = editor.document;
+  const detected = detectApexKindAndLine(doc, here);
   if (!detected) {
     vscode.window.showInformationMessage(
       "ApexDoc: Could not detect a class/method/constructor/property/enum value here."
     );
     return;
   }
-
   const { kind, line: declLine } = detected;
 
-  // pick snippet by kind (constructors reuse the "method" snippet)
-  const snippetName = kind === "constructor" ? "method" : kind;
+  const snippetName =
+    kind === "constructor"
+      ? "method"
+      : kind === "enumValue"
+      ? "enumValue"
+      : kind;
   const snippetPath = path.join(
     __dirname,
     "..",
@@ -113,81 +148,54 @@ async function generateApexDoc(): Promise<void> {
   };
   let lines: string[] = Array.isArray(def.body) ? [...def.body] : [];
 
-  // Methods & constructors: auto @param (and we keep @throws in snippet)
+  // Methods & constructors: auto @param
   if (kind === "method" || kind === "constructor") {
-    const params = getMethodOrCtorParams(doc, declLine, kind);
+    const params = getApexParams(doc, declLine, kind);
     if (params.length > 0) {
-      const generated = params.map((p) => `* @param ${p} description`);
-
-      // Replace existing "* @param" lines; if none, inject after @description
-      let replaced = false;
-      const out: string[] = [];
-      for (const line of lines) {
-        if (line.trim().startsWith("* @param")) {
-          if (!replaced) out.push(...generated);
-          replaced = true;
-          continue;
-        }
-        out.push(line);
-      }
-      if (!replaced) {
-        const injected: string[] = [];
-        let didInject = false;
-        for (const line of out) {
-          injected.push(line);
-          if (!didInject && line.trim().startsWith("* @description")) {
-            injected.push(...generated);
-            didInject = true;
-          }
-        }
-        lines = injected;
-      } else {
-        lines = out;
-      }
+      const generated = params.map((p: string) => `* @param ${p} description`);
+      lines = replaceOrInjectParams(lines, generated);
     }
   }
 
-  // Insert above contiguous annotation block (e.g., @AuraEnabled)
-  const insertLine = findTopOfAnnotationBlock(doc, declLine);
-  const insertPos = new vscode.Position(insertLine, 0);
-
+  const insertLine = findTopOfAnnotationBlock(doc, declLine); // above @AuraEnabled etc.
   await editor.insertSnippet(
     new vscode.SnippetString(lines.join("\n") + "\n"),
-    insertPos
+    new vscode.Position(insertLine, 0)
   );
 }
 
-/* ---------------- detection helpers ---------------- */
-
-function detectKindAndLine(
+function detectApexKindAndLine(
   doc: vscode.TextDocument,
   fromLine: number
-): { kind: Kind; line: number } | null {
+): { kind: ApexKind; line: number } | null {
   const up = Math.max(0, fromLine - 200);
   const down = Math.min(doc.lineCount - 1, fromLine + 200);
 
-  // up first
   for (let i = fromLine; i >= up; i--) {
-    const kind = kindAtLine(doc, i);
-    if (kind) return { kind, line: i };
+    const k = apexKindAtLine(doc, i);
+    if (k) return { kind: k, line: i };
   }
-  // then down
   for (let i = fromLine + 1; i <= down; i++) {
-    const kind = kindAtLine(doc, i);
-    if (kind) return { kind, line: i };
+    const k = apexKindAtLine(doc, i);
+    if (k) return { kind: k, line: i };
   }
   return null;
 }
 
-function kindAtLine(doc: vscode.TextDocument, line: number): Kind | null {
+function apexKindAtLine(
+  doc: vscode.TextDocument,
+  line: number
+): ApexKind | null {
   const t = stripLineComments(doc.lineAt(line).text);
 
-  // enum VALUE (simple heuristic: ALLCAPS token on its own line, within an enum block ideally)
-  if (/^\s*[A-Z0-9_]+\s*(=.+)?\s*,?\s*$/.test(t)) {
-    if (isInsideEnumBlock(doc, line)) return "enumValue";
-  }
+  // enum value
+  if (
+    /^\s*[A-Z0-9_]+\s*(=.+)?\s*,?\s*$/.test(t) &&
+    isInsideEnumBlock(doc, line)
+  )
+    return "enumValue";
 
-  // constructor: modifiers + ClassName(...) (no return type)
+  // constructor
   const className = findEnclosingClassName(doc, line);
   if (className) {
     const ctor = new RegExp(
@@ -197,14 +205,13 @@ function kindAtLine(doc: vscode.TextDocument, line: number): Kind | null {
     if (ctor.test(t)) return "constructor";
   }
 
-  // method: modifiers + returnType + name(...)
+  // method
   if (
     /^\s*(public|private|protected|global)?\s*(static\s+)?[\w<>\[\],\s?]+\s+[A-Za-z_]\w*\s*\(/i.test(
       t
     )
-  ) {
+  )
     return "method";
-  }
 
   // class/interface/enum
   if (
@@ -215,7 +222,7 @@ function kindAtLine(doc: vscode.TextDocument, line: number): Kind | null {
     return "class";
   }
 
-  // property with get/set
+  // property
   if (
     /^\s*(public|private|protected|global)?\s*(static\s+)?[\w<>\[\],\s?]+\s+[A-Za-z_]\w*\s*\{\s*get;\s*set;\s*\}/i.test(
       t
@@ -223,12 +230,10 @@ function kindAtLine(doc: vscode.TextDocument, line: number): Kind | null {
   ) {
     return "property";
   }
-
   return null;
 }
 
 function isInsideEnumBlock(doc: vscode.TextDocument, line: number): boolean {
-  // naive scan upwards for "enum <Name>" before encountering "class" or a matching "}"
   for (let i = line; i >= 0 && i >= line - 200; i--) {
     const txt = stripLineComments(doc.lineAt(i).text);
     if (/\b(class|interface)\b/i.test(txt)) return false;
@@ -249,16 +254,13 @@ function findEnclosingClassName(
   return null;
 }
 
-/* ---------------- parse params (methods & ctors) ---------------- */
-
-function getMethodOrCtorParams(
+function getApexParams(
   doc: vscode.TextDocument,
   declLine: number,
   kind: "method" | "constructor"
 ): string[] {
-  const start = locateSignatureStart(doc, declLine, kind);
+  const start = locateApexSignatureStart(doc, declLine, kind);
   if (start === -1) return [];
-
   let sig = "";
   let ended = false;
   const max = Math.min(doc.lineCount - 1, start + 50);
@@ -271,12 +273,10 @@ function getMethodOrCtorParams(
     }
   }
   if (!ended) return [];
-
   const m = sig.match(/\(([^)]*)\)/);
   if (!m) return [];
   const blob = m[1].trim();
   if (!blob) return [];
-
   return blob
     .split(",")
     .map((s) => s.trim())
@@ -289,14 +289,13 @@ function getMethodOrCtorParams(
     .filter(Boolean);
 }
 
-function locateSignatureStart(
+function locateApexSignatureStart(
   doc: vscode.TextDocument,
   declLine: number,
   kind: "method" | "constructor"
 ): number {
   const up = Math.max(0, declLine - 50);
   const down = Math.min(doc.lineCount - 1, declLine + 50);
-
   const className = findEnclosingClassName(doc, declLine);
   const ctorStart = className
     ? new RegExp(
@@ -320,7 +319,158 @@ function locateSignatureStart(
   return -1;
 }
 
-/* ---------------- misc helpers ---------------- */
+/* =================== JS/TS (LWC) =================== */
+
+async function generateJsDoc(editor: vscode.TextEditor, here: number) {
+  const doc = editor.document;
+  const detected = detectJsKindAndLine(doc, here);
+  if (!detected) {
+    vscode.window.showInformationMessage(
+      "JSDoc: Could not detect a class/function/method/property here."
+    );
+    return;
+  }
+  const { kind, line: declLine } = detected;
+
+  // Minimal JSDoc blocks; we don’t store JS snippets on disk to keep it simple
+  let lines: string[] = ["/**", " * @description ${1:Describe this}", " */"];
+
+  if (kind === "jsFunction" || kind === "jsMethod") {
+    const params = getJsParams(doc, declLine);
+    if (params.length) {
+      // Build a richer JSDoc for functions/methods
+      lines = [
+        "/**",
+        " * @description ${1:Describe this}",
+        ...params.map(
+          (p, i) =>
+            ` * @param {${i ? "any" : "any"}} ${p} ${
+              i ? "description" : "description"
+            }`
+        ),
+        " * @returns {any} ${2:What is returned}",
+        " * @example",
+        " * // example here",
+        " */",
+      ];
+    } else {
+      lines = [
+        "/**",
+        " * @description ${1:Describe this}",
+        " * @returns {any} ${2:What is returned}",
+        " * @example",
+        " * // example here",
+        " */",
+      ];
+    }
+  }
+
+  // Insert above decorators like @api/@wire/@track if present
+  const insertLine = findTopOfJsDecoratorBlock(doc, declLine);
+  await editor.insertSnippet(
+    new vscode.SnippetString(lines.join("\n") + "\n"),
+    new vscode.Position(insertLine, 0)
+  );
+}
+
+function detectJsKindAndLine(
+  doc: vscode.TextDocument,
+  fromLine: number
+): { kind: JsKind; line: number } | null {
+  const up = Math.max(0, fromLine - 200);
+  const down = Math.min(doc.lineCount - 1, fromLine + 200);
+
+  for (let i = fromLine; i >= up; i--) {
+    const k = jsKindAtLine(doc.lineAt(i).text);
+    if (k) return { kind: k, line: i };
+  }
+  for (let i = fromLine + 1; i <= down; i++) {
+    const k = jsKindAtLine(doc.lineAt(i).text);
+    if (k) return { kind: k, line: i };
+  }
+  return null;
+}
+
+function jsKindAtLine(text: string): JsKind | null {
+  const t = stripLineComments(text);
+
+  // class
+  if (
+    /^\s*export\s+default\s+class\s+[A-Za-z_]\w*/.test(t) ||
+    /^\s*class\s+[A-Za-z_]\w*/.test(t)
+  )
+    return "jsClass";
+
+  // method inside class: name(...) {  (heuristic)
+  if (/^\s*[A-Za-z_]\w*\s*\([^)]*\)\s*\{/.test(t)) return "jsMethod";
+
+  // function
+  if (
+    /^\s*export\s+function\s+[A-Za-z_]\w*\s*\(|^\s*function\s+[A-Za-z_]\w*\s*\(|^\s*const\s+[A-Za-z_]\w*\s*=\s*\(/.test(
+      t
+    )
+  ) {
+    return "jsFunction";
+  }
+
+  // property (very rough)
+  if (/^\s*(public|private|protected)?\s*[A-Za-z_]\w*\s*[:=]\s*/.test(t))
+    return "jsProperty";
+
+  return null;
+}
+
+function getJsParams(doc: vscode.TextDocument, declLine: number): string[] {
+  // Read a few lines to get (...) in function/method
+  const max = Math.min(doc.lineCount - 1, declLine + 10);
+  let sig = "";
+  for (let i = declLine; i <= max; i++) {
+    const tx = stripLineComments(doc.lineAt(i).text);
+    sig += tx + " ";
+    if (tx.includes(")")) break;
+  }
+  const m = sig.match(/\(([^)]*)\)/);
+  if (!m) return [];
+  const blob = m[1].trim();
+  if (!blob) return [];
+  return blob
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((p) => p.replace(/=.*$/, "")) // drop default values
+    .map((p) => p.replace(/[\{\}\[\]]/g, "")) // drop destructuring braces
+    .map((p) => p.split(":")[0].trim()) // TS param: name: Type
+    .map((p) => p.replace(/[^A-Za-z0-9_]/g, ""))
+    .filter(Boolean);
+}
+
+/* =================== SHARED HELPERS =================== */
+
+function replaceOrInjectParams(lines: string[], generated: string[]): string[] {
+  let replaced = false;
+  const out: string[] = [];
+  for (const line of lines) {
+    if (line.trim().startsWith("* @param")) {
+      if (!replaced) out.push(...generated);
+      replaced = true;
+      continue;
+    }
+    out.push(line);
+  }
+  if (!replaced) {
+    const injected: string[] = [];
+    let didInject = false;
+    for (const line of out) {
+      injected.push(line);
+      if (!didInject && line.trim().startsWith("* @description")) {
+        injected.push(...generated);
+        didInject = true;
+      }
+    }
+    return injected;
+  }
+  return out;
+}
 
 function findTopOfAnnotationBlock(
   doc: vscode.TextDocument,
@@ -339,22 +489,34 @@ function findTopOfAnnotationBlock(
   return Math.max(0, i + 1);
 }
 
-function insideDocBlock(doc: vscode.TextDocument, line: number): boolean {
-  // scan up until /** or non-comment
-  let sawOpen = false,
-    sawClose = false;
-  for (let i = line; i >= 0 && i >= line - 50; i--) {
-    const t = doc.lineAt(i).text.trim();
-    if (t.includes("*/")) {
-      sawClose = true;
-      break;
+function findTopOfJsDecoratorBlock(
+  doc: vscode.TextDocument,
+  declLine: number
+): number {
+  // LWC decorators are lines starting with @api, @wire, @track, @api readonly, etc.
+  let i = declLine - 1;
+  while (i >= 0 && doc.lineAt(i).text.trim() === "") i--;
+  while (i >= 0) {
+    const txt = doc.lineAt(i).text.trim();
+    if (/^@(?:api|wire|track)\b/.test(txt)) {
+      i--;
+      continue;
     }
-    if (t.startsWith("/**")) {
-      sawOpen = true;
-      break;
-    }
+    break;
   }
-  return sawOpen && !sawClose;
+  return Math.max(0, i + 1);
+}
+
+function insideDocBlock(doc: vscode.TextDocument, line: number): boolean {
+  const trimmed = doc.lineAt(line).text.trim();
+  if (trimmed.startsWith("/**") || trimmed.startsWith("*")) return true;
+  const limit = Math.max(0, line - 100);
+  for (let i = line; i >= limit; i--) {
+    const t = doc.lineAt(i).text;
+    if (t.includes("*/")) return false;
+    if (t.includes("/**")) return true;
+  }
+  return false;
 }
 
 function stripLineComments(s: string): string {
@@ -367,6 +529,15 @@ function tagItem(label: string): vscode.CompletionItem {
     vscode.CompletionItemKind.Keyword
   );
   item.insertText = label + " ";
-  item.detail = "ApexDoc tag";
+  item.detail = "Doc tag";
+  return item;
+}
+
+function snippetItem(label: string, snippet: string): vscode.CompletionItem {
+  const item = new vscode.CompletionItem(
+    label,
+    vscode.CompletionItemKind.Snippet
+  );
+  item.insertText = new vscode.SnippetString(snippet);
   return item;
 }

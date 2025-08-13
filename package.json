@@ -2,7 +2,7 @@
   "name": "apexdoc",
   "displayName": "ApexDoc",
   "description": "An lightweight extension to generate ApexDoc comments with the click of a button.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "license": "MIT",
   "engines": {
     "vscode": "^1.103.0"
@@ -15,21 +15,23 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:apex"
+    "onLanguage:apex",
+    "onLanguage:javascript",
+    "onLanguage:typescript"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
         "command": "apexdoc.generate",
-        "title": "Generate ApexDoc comment"
+        "title": "Generate ApexDoc/JSDoc comment"
       }
     ],
     "menus": {
       "editor/context": [
         {
           "command": "apexdoc.generate",
-          "when": "editorLangId == apex",
+          "when": "editorLangId == apex || editorLangId == javascript || editorLangId == typescript",
           "group": "navigation"
         }
       ]
