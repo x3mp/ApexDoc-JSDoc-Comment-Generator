@@ -33,11 +33,9 @@ async function insertDoc(kind: string) {
     const params = getMethodParams(editor);
     if (params.length > 0) {
       const paramLines = params.map((p) => `* @param ${p} description`);
-      // Find where to insert params (replace placeholder ones in snippet)
       const newBody: string[] = [];
       for (const line of snippetBody) {
         if (line.trim().startsWith("* @param")) {
-          // Replace with generated param lines
           newBody.push(...paramLines);
         } else {
           newBody.push(line);
@@ -48,8 +46,13 @@ async function insertDoc(kind: string) {
   }
 
   const snippet = new vscode.SnippetString(snippetBody.join("\n"));
+
+  // Insert ABOVE the current line
   const pos = editor.selection.active;
-  await editor.insertSnippet(snippet, pos);
+  const lineAbove = pos.line > 0 ? pos.line : 0;
+  const insertPos = new vscode.Position(lineAbove, 0);
+
+  await editor.insertSnippet(snippet, insertPos);
 }
 
 function getMethodParams(editor: vscode.TextEditor): string[] {
