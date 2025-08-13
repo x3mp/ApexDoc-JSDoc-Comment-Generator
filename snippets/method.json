@@ -1,0 +1,12 @@
+{
+  "body": [
+    "/**",
+    "* @description ${1:What does this method do?}",
+    "* @param objectName the name of the object to look up",
+    "* @param fieldName the name of the field to look up",
+    "* @return ${2:What is returned}",
+    "* @example",
+    "* Account a = new Account();",
+    "*/"
+  ]
+}

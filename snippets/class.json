@@ -1,0 +1,13 @@
+{
+  "body": [
+    "/**",
+    "* @author ${1:Your Name}",
+    "* @date ${2:${CURRENT_YEAR}-${CURRENT_MONTH}-${CURRENT_DATE}}",
+    "*",
+    "* @group ${3:General}",
+    "* @group-content OPTIONAL",
+    "*",
+    "* @description ${4:What does this class do?} name updating.",
+    "*/"
+  ]
+}

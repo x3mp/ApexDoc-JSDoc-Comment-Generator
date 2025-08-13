@@ -1,0 +1,71 @@
+{
+  "name": "apexdoc",
+  "displayName": "ApexDoc",
+  "description": "An lightweight extension to generate ApexDoc comments with the click of a button.",
+  "version": "0.0.1",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.103.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/roelSarawak/ApexDoc.git"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:apex"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "apexdoc.insertClassDoc",
+        "title": "Insert ApexDoc for Class"
+      },
+      {
+        "command": "apexdoc.insertMethodDoc",
+        "title": "Insert ApexDoc for Method"
+      },
+      {
+        "command": "apexdoc.insertPropDoc",
+        "title": "Insert ApexDoc for Property"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "apexdoc.insertClassDoc",
+          "when": "editorLangId == apex",
+          "group": "navigation"
+        },
+        {
+          "command": "apexdoc.insertMethodDoc",
+          "when": "editorLangId == apex",
+          "group": "navigation"
+        },
+        {
+          "command": "apexdoc.insertPropDoc",
+          "when": "editorLangId == apex",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile && npm run lint",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/node": "^18.19.122",
+    "@types/vscode": "^1.60.0",
+    "typescript": "^4.0.0",
+    "vsce": "^2.15.0",
+    "vscode": "^1.1.37"
+  }
+}
