@@ -1,15 +1,10 @@
 {
-    "JSDoc Function": {
-        "prefix": "jsdocFunction",
-        "body": [
-            "/**",
-            " * @description ${1:Describe this function}",
-            "${2:@param {any} param1 description}",
-            "@returns {any} ${3:What is returned}",
-            " * @example",
-            " * // example here",
-            " */"
-        ],
-        "description": "JSDoc template for functions"
-    }
+    "body": [
+        "/**",
+        " * @description ${1:Describe this function}",
+        " * @returns {any} ${2:What is returned}",
+        " * @example",
+        " * // example here",
+        " */"
+    ]
 }
