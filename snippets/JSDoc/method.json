@@ -1,0 +1,15 @@
+{
+    "JSDoc Method": {
+        "prefix": "jsdocMethod",
+        "body": [
+            "/**",
+            " * @description ${1:Describe this method}",
+            "${2:@param {any} param1 description}",
+            "@returns {any} ${3:What is returned}",
+            " * @example",
+            " * // example here",
+            " */"
+        ],
+        "description": "JSDoc template for methods"
+    }
+}

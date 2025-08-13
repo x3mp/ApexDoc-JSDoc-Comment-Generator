@@ -11,7 +11,7 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.commands.registerCommand("apexdoc.generate", () => generateDoc())
     );
 
-    // Apex: completion for ApexDoc tags & inline link helpers
+    // Apex completions inside /** ... */
     const apexProvider = vscode.languages.registerCompletionItemProvider(
         "apex",
         {
@@ -23,7 +23,7 @@ export function activate(context: vscode.ExtensionContext) {
 
                 const items: vscode.CompletionItem[] = [];
 
-                // Common tags (note we pass document & position)
+                // Common tags (keep @see suggestion-only; not in templates)
                 const common = [
                     "@description",
                     "@see",
@@ -48,12 +48,11 @@ export function activate(context: vscode.ExtensionContext) {
                     items.push(tagItem("@description", document, position));
                 }
 
-                // Inline link helpers can stay as-is (no '@' issue)
+                // Inline link helpers
                 items.push(snippetItem("<<TypeName>>", "<<${1:TypeName}>>"));
                 items.push(
                     snippetItem("{@link TypeName}", "{@link ${1:TypeName}}")
                 );
-
                 return items;
             },
         },
@@ -63,7 +62,7 @@ export function activate(context: vscode.ExtensionContext) {
     );
     context.subscriptions.push(apexProvider);
 
-    // JS/TS (LWC): JSDoc completions
+    // JSDoc completions for JS/TS (LWC/Aura)
     const jsTsProvider = vscode.languages.registerCompletionItemProvider(
         [{ language: "javascript" }, { language: "typescript" }],
         {
@@ -118,6 +117,26 @@ async function generateDoc(): Promise<void> {
     }
 }
 
+/* =================== SNIPPET LOADER =================== */
+
+function loadSnippetBody(folder: "ApexDoc" | "JSDoc", name: string): string[] {
+    const file = path.join(__dirname, "..", "snippets", folder, `${name}.json`);
+    if (!fs.existsSync(file)) {
+        throw new Error(`Snippet not found: ${folder}/${name}.json`);
+    }
+    const json = JSON.parse(fs.readFileSync(file, "utf8"));
+
+    // Simple shape: { "body": [...] }
+    if (Array.isArray(json.body)) return json.body as string[];
+
+    // VS Code snippet shape: { "Any Name": { "body": [...] } }
+    const firstKey = Object.keys(json)[0];
+    if (firstKey && Array.isArray(json[firstKey]?.body))
+        return json[firstKey].body;
+
+    throw new Error(`Invalid snippet format in ${folder}/${name}.json`);
+}
+
 /* =================== APEX =================== */
 
 async function generateApexDoc(editor: vscode.TextEditor, here: number) {
@@ -136,24 +155,9 @@ async function generateApexDoc(editor: vscode.TextEditor, here: number) {
             ? "method"
             : kind === "enumValue"
             ? "enumValue"
-            : kind;
-    const snippetPath = path.join(
-        __dirname,
-        "..",
-        "snippets",
-        `${snippetName}.json`
-    );
-    if (!fs.existsSync(snippetPath)) {
-        vscode.window.showErrorMessage(
-            `Snippet for "${snippetName}" not found at ${snippetPath}`
-        );
-        return;
-    }
+            : kind; // class | method | property
 
-    const def = JSON.parse(fs.readFileSync(snippetPath, "utf-8")) as {
-        body: string[];
-    };
-    let lines: string[] = Array.isArray(def.body) ? [...def.body] : [];
+    let lines = loadSnippetBody("ApexDoc", snippetName);
 
     // Methods & constructors: auto @param
     if (kind === "method" || kind === "constructor") {
@@ -162,11 +166,12 @@ async function generateApexDoc(editor: vscode.TextEditor, here: number) {
             const generated = params.map(
                 (p: string) => `* @param ${p} description`
             );
-            lines = replaceOrInjectParams(lines, generated);
+            lines = replaceOrInjectApexParams(lines, generated);
         }
     }
 
-    const insertLine = findTopOfAnnotationBlock(doc, declLine); // above @AuraEnabled etc.
+    // Insert above contiguous annotation block (e.g., @AuraEnabled)
+    const insertLine = findTopOfAnnotationBlock(doc, declLine);
     await editor.insertSnippet(
         new vscode.SnippetString(lines.join("\n") + "\n"),
         new vscode.Position(insertLine, 0)
@@ -177,16 +182,13 @@ function detectApexKindAndLine(
     doc: vscode.TextDocument,
     fromLine: number
 ): { kind: ApexKind; line: number } | null {
+    // If on/inside annotation run, prefer scanning downward first
     const lineText = doc.lineAt(fromLine).text;
-
-    // If cursor is on an annotation or inside an annotation block, prefer scanning downward first
     if (isAnnotationLine(lineText) || isInsideAnnotationRun(doc, fromLine)) {
         const downHit = findNextDeclDown(doc, fromLine);
         if (downHit) return downHit;
-        // fallback to old behavior if nothing found
     }
 
-    // Original behavior: scan up first, then down
     const up = Math.max(0, fromLine - 200);
     const down = Math.min(doc.lineCount - 1, fromLine + 200);
 
@@ -338,7 +340,106 @@ function locateApexSignatureStart(
     return -1;
 }
 
-/* =================== JS/TS (LWC) =================== */
+function replaceOrInjectApexParams(
+    lines: string[],
+    generated: string[]
+): string[] {
+    let replaced = false;
+    const out: string[] = [];
+    for (const line of lines) {
+        if (line.trim().startsWith("* @param")) {
+            if (!replaced) out.push(...generated);
+            replaced = true;
+            continue;
+        }
+        out.push(line);
+    }
+    if (!replaced) {
+        const injected: string[] = [];
+        let didInject = false;
+        for (const line of out) {
+            injected.push(line);
+            if (!didInject && line.trim().startsWith("* @description")) {
+                injected.push(...generated);
+                didInject = true;
+            }
+        }
+        return injected;
+    }
+    return out;
+}
+
+/* ===== Apex annotation helpers & “annotation-aware” detection ===== */
+
+function isAnnotationLine(text: string): boolean {
+    return text.trim().startsWith("@");
+}
+
+function isInsideAnnotationRun(
+    doc: vscode.TextDocument,
+    line: number
+): boolean {
+    const t = (n: number) =>
+        n >= 0 && n < doc.lineCount ? doc.lineAt(n).text.trim() : "";
+    const isAnnoOrBlank = (s: string) => s === "" || s.startsWith("@");
+
+    let upHasAnno = false;
+    for (let i = line; i >= Math.max(0, line - 10); i--) {
+        const s = t(i);
+        if (!isAnnoOrBlank(s)) break;
+        if (s.startsWith("@")) upHasAnno = true;
+    }
+
+    let downHasAnno = false;
+    for (let i = line; i <= Math.min(doc.lineCount - 1, line + 10); i++) {
+        const s = t(i);
+        if (!isAnnoOrBlank(s)) break;
+        if (s.startsWith("@")) downHasAnno = true;
+    }
+
+    return upHasAnno || downHasAnno;
+}
+
+function findNextDeclDown(
+    doc: vscode.TextDocument,
+    fromLine: number
+): { kind: ApexKind; line: number } | null {
+    // Skip the current annotation block and blank lines
+    let i = fromLine;
+    while (i < doc.lineCount) {
+        const s = doc.lineAt(i).text.trim();
+        if (s === "" || s.startsWith("@")) {
+            i++;
+            continue;
+        }
+        break;
+    }
+    const limit = Math.min(doc.lineCount - 1, i + 200);
+    for (let l = i; l <= limit; l++) {
+        const k = apexKindAtLine(doc, l);
+        if (k) return { kind: k, line: l };
+    }
+    return null;
+}
+
+function findTopOfAnnotationBlock(
+    doc: vscode.TextDocument,
+    declLine: number
+): number {
+    let i = declLine - 1;
+    while (i >= 0 && doc.lineAt(i).text.trim() === "") i--;
+    while (i >= 0) {
+        const txt = doc.lineAt(i).text.trim();
+        if (txt.startsWith("@")) {
+            i--;
+            continue;
+        }
+        break;
+    }
+    return Math.max(0, i + 1);
+}
+
+/* =================== JS/TS (LWC & Aura) =================== */
 
 async function generateJsDoc(editor: vscode.TextEditor, here: number) {
     const doc = editor.document;
@@ -351,40 +452,33 @@ async function generateJsDoc(editor: vscode.TextEditor, here: number) {
     }
     const { kind, line: declLine } = detected;
 
-    // Minimal JSDoc blocks; we don’t store JS snippets on disk to keep it simple
-    let lines: string[] = ["/**", " * @description ${1:Describe this}", " */"];
+    // Pick base template from /snippets/JSDoc
+    const baseName =
+        kind === "jsFunction"
+            ? "functions"
+            : kind === "jsMethod"
+            ? "method"
+            : "method"; // fallback for class/property (keeps it minimal)
 
+    let lines = loadSnippetBody("JSDoc", baseName);
+
+    // If function/method: auto-generate @param {any} name description and ensure @returns
     if (kind === "jsFunction" || kind === "jsMethod") {
         const params = getJsParams(doc, declLine);
         if (params.length) {
-            // Build a richer JSDoc for functions/methods
-            lines = [
-                "/**",
-                " * @description ${1:Describe this}",
-                ...params.map(
-                    (p, i) =>
-                        ` * @param {${i ? "any" : "any"}} ${p} ${
-                            i ? "description" : "description"
-                        }`
-                ),
-                " * @returns {any} ${2:What is returned}",
-                " * @example",
-                " * // example here",
-                " */",
-            ];
+            const generated = params.map(
+                (p, i) =>
+                    ` * @param {any} ${p} ${
+                        i === 0 ? "${2:description}" : "description"
+                    }`
+            );
+            lines = replaceOrInjectJsParamsAndReturns(lines, generated);
         } else {
-            lines = [
-                "/**",
-                " * @description ${1:Describe this}",
-                " * @returns {any} ${2:What is returned}",
-                " * @example",
-                " * // example here",
-                " */",
-            ];
+            lines = ensureReturnsInJSDoc(lines);
         }
     }
 
-    // Insert above decorators like @api/@wire/@track if present
+    // Insert above decorators (e.g., @api, @wire, @track)
     const insertLine = findTopOfJsDecoratorBlock(doc, declLine);
     await editor.insertSnippet(
         new vscode.SnippetString(lines.join("\n") + "\n"),
@@ -420,19 +514,24 @@ function jsKindAtLine(text: string): JsKind | null {
     )
         return "jsClass";
 
-    // method inside class: name(...) {  (heuristic)
+    // class method shorthand: name(...) {
     if (/^\s*[A-Za-z_]\w*\s*\([^)]*\)\s*\{/.test(t)) return "jsMethod";
 
-    // function
+    // Aura helper object-literal: name: function (...) {
+    if (/^\s*[A-Za-z_]\w*\s*:\s*function\s*\(/.test(t)) return "jsMethod";
+
+    // function forms
     if (
-        /^\s*export\s+function\s+[A-Za-z_]\w*\s*\(|^\s*function\s+[A-Za-z_]\w*\s*\(|^\s*const\s+[A-Za-z_]\w*\s*=\s*\(/.test(
-            t
-        )
+        /^\s*export\s+function\s+[A-Za-z_]\w*\s*\(/.test(t) ||
+        /^\s*function\s+[A-Za-z_]\w*\s*\(/.test(t) ||
+        /^\s*const\s+[A-Za-z_]\w*\s*=\s*\(/.test(t) ||
+        /^\s*const\s+[A-Za-z_]\w*\s*=\s*async\s*\(/.test(t) ||
+        /^\s*const\s+[A-Za-z_]\w*\s*=\s*\w*\s*=>\s*\(/.test(t)
     ) {
         return "jsFunction";
     }
 
-    // property (very rough)
+    // property (rough heuristic)
     if (/^\s*(public|private|protected)?\s*[A-Za-z_]\w*\s*[:=]\s*/.test(t))
         return "jsProperty";
 
@@ -440,7 +539,6 @@ function jsKindAtLine(text: string): JsKind | null {
 }
 
 function getJsParams(doc: vscode.TextDocument, declLine: number): string[] {
-    // Read a few lines to get (...) in function/method
     const max = Math.min(doc.lineCount - 1, declLine + 10);
     let sig = "";
     for (let i = declLine; i <= max; i++) {
@@ -463,124 +561,70 @@ function getJsParams(doc: vscode.TextDocument, declLine: number): string[] {
         .filter(Boolean);
 }
 
-/* =================== SHARED HELPERS =================== */
-
-function replaceOrInjectParams(lines: string[], generated: string[]): string[] {
+function replaceOrInjectJsParamsAndReturns(
+    lines: string[],
+    generatedParams: string[]
+): string[] {
+    // Replace any existing " * @param " lines; if none, inject after @description
     let replaced = false;
     const out: string[] = [];
     for (const line of lines) {
         if (line.trim().startsWith("* @param")) {
-            if (!replaced) out.push(...generated);
+            if (!replaced) out.push(...generatedParams);
             replaced = true;
             continue;
         }
         out.push(line);
     }
+    let result = out;
     if (!replaced) {
         const injected: string[] = [];
         let didInject = false;
         for (const line of out) {
             injected.push(line);
             if (!didInject && line.trim().startsWith("* @description")) {
-                injected.push(...generated);
+                injected.push(...generatedParams);
                 didInject = true;
             }
         }
-        return injected;
+        result = injected;
     }
-    return out;
-}
 
-function findTopOfAnnotationBlock(
-    doc: vscode.TextDocument,
-    declLine: number
-): number {
-    let i = declLine - 1;
-    while (i >= 0 && doc.lineAt(i).text.trim() === "") i--;
-    while (i >= 0) {
-        const txt = doc.lineAt(i).text.trim();
-        if (txt.startsWith("@")) {
-            i--;
-            continue;
+    // Ensure a @returns exists
+    const hasReturns = result.some((l) => l.trim().startsWith("* @returns"));
+    if (!hasReturns) {
+        const idxExample = result.findIndex((l) =>
+            l.trim().startsWith("* @example")
+        );
+        const returnsLine = " * @returns {any} ${3:What is returned}";
+        if (idxExample !== -1) {
+            result.splice(idxExample, 0, returnsLine);
+        } else {
+            const closeIdx = Math.max(0, result.length - 1);
+            result.splice(closeIdx, 0, returnsLine);
         }
-        break;
     }
-    return Math.max(0, i + 1);
+    return result;
 }
 
-function isAnnotationLine(text: string): boolean {
-    const t = text.trim();
-    return t.startsWith("@");
+function ensureReturnsInJSDoc(lines: string[]): string[] {
+    const hasReturns = lines.some((l) => l.trim().startsWith("* @returns"));
+    if (hasReturns) return lines;
+    const result = [...lines];
+    const idxExample = result.findIndex((l) =>
+        l.trim().startsWith("* @example")
+    );
+    const returnsLine = " * @returns {any} ${2:What is returned}";
+    if (idxExample !== -1) {
+        result.splice(idxExample, 0, returnsLine);
+    } else {
+        const closeIdx = Math.max(0, result.length - 1);
+        result.splice(closeIdx, 0, returnsLine);
+    }
+    return result;
 }
 
-function isInsideAnnotationRun(
-    doc: vscode.TextDocument,
-    line: number
-): boolean {
-    // look up and down a bit — if we see contiguous @-lines around, treat as annotation region
-    const t = (n: number) =>
-        n >= 0 && n < doc.lineCount ? doc.lineAt(n).text.trim() : "";
-    const isAnnoOrBlank = (s: string) => s === "" || s.startsWith("@");
-
-    let upHasAnno = false;
-    for (let i = line; i >= Math.max(0, line - 10); i--) {
-        const s = t(i);
-        if (!isAnnoOrBlank(s)) break;
-        if (s.startsWith("@")) upHasAnno = true;
-    }
-
-    let downHasAnno = false;
-    for (let i = line; i <= Math.min(doc.lineCount - 1, line + 10); i++) {
-        const s = t(i);
-        if (!isAnnoOrBlank(s)) break;
-        if (s.startsWith("@")) downHasAnno = true;
-    }
-
-    return upHasAnno || downHasAnno;
-}
-
-// NEW: find the next declaration BELOW the current/annotation line
-function findNextDeclDown(
-    doc: vscode.TextDocument,
-    fromLine: number
-): { kind: ApexKind; line: number } | null {
-    // Skip the current annotation block and blank lines
-    let i = fromLine;
-    while (i < doc.lineCount) {
-        const s = doc.lineAt(i).text.trim();
-        if (s === "" || s.startsWith("@")) {
-            i++;
-            continue;
-        }
-        break;
-    }
-
-    // Look for a decl on this line or shortly after (handles signatures that start here)
-    const limit = Math.min(doc.lineCount - 1, i + 200);
-    for (let l = i; l <= limit; l++) {
-        const k = apexKindAtLine(doc, l);
-        if (k) return { kind: k, line: l };
-    }
-    return null;
-}
-
-function findTopOfJsDecoratorBlock(
-    doc: vscode.TextDocument,
-    declLine: number
-): number {
-    // LWC decorators are lines starting with @api, @wire, @track, @api readonly, etc.
-    let i = declLine - 1;
-    while (i >= 0 && doc.lineAt(i).text.trim() === "") i--;
-    while (i >= 0) {
-        const txt = doc.lineAt(i).text.trim();
-        if (/^@(?:api|wire|track)\b/.test(txt)) {
-            i--;
-            continue;
-        }
-        break;
-    }
-    return Math.max(0, i + 1);
-}
+/* =================== SHARED HELPERS =================== */
 
 function insideDocBlock(doc: vscode.TextDocument, line: number): boolean {
     const trimmed = doc.lineAt(line).text.trim();
@@ -607,12 +651,10 @@ function tagItem(
         label,
         vscode.CompletionItemKind.Keyword
     );
-
-    // Always insert the full tag (with '@')
     item.insertText = label + " ";
     item.detail = "Doc tag";
 
-    // If the user just typed '@', overwrite it so we don't get '@@param'
+    // Overwrite a just-typed '@' to avoid '@@param'
     const prevPos = position.with(
         position.line,
         Math.max(0, position.character - 1)
@@ -621,7 +663,6 @@ function tagItem(
     if (prevChar === "@") {
         item.range = new vscode.Range(prevPos, position);
     }
-
     return item;
 }
 
@@ -632,4 +673,22 @@ function snippetItem(label: string, snippet: string): vscode.CompletionItem {
     );
     item.insertText = new vscode.SnippetString(snippet);
     return item;
+}
+
+function findTopOfJsDecoratorBlock(
+    doc: vscode.TextDocument,
+    declLine: number
+): number {
+    // LWC decorators are lines starting with @api, @wire, @track
+    let i = declLine - 1;
+    while (i >= 0 && doc.lineAt(i).text.trim() === "") i--;
+    while (i >= 0) {
+        const txt = doc.lineAt(i).text.trim();
+        if (/^@(?:api|wire|track)\b/.test(txt)) {
+            i--;
+            continue;
+        }
+        break;
+    }
+    return Math.max(0, i + 1);
 }
