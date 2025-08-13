@@ -177,6 +177,16 @@ function detectApexKindAndLine(
     doc: vscode.TextDocument,
     fromLine: number
 ): { kind: ApexKind; line: number } | null {
+    const lineText = doc.lineAt(fromLine).text;
+
+    // If cursor is on an annotation or inside an annotation block, prefer scanning downward first
+    if (isAnnotationLine(lineText) || isInsideAnnotationRun(doc, fromLine)) {
+        const downHit = findNextDeclDown(doc, fromLine);
+        if (downHit) return downHit;
+        // fallback to old behavior if nothing found
+    }
+
+    // Original behavior: scan up first, then down
     const up = Math.max(0, fromLine - 200);
     const down = Math.min(doc.lineCount - 1, fromLine + 200);
 
@@ -496,6 +506,62 @@ function findTopOfAnnotationBlock(
         break;
     }
     return Math.max(0, i + 1);
+}
+
+function isAnnotationLine(text: string): boolean {
+    const t = text.trim();
+    return t.startsWith("@");
+}
+
+function isInsideAnnotationRun(
+    doc: vscode.TextDocument,
+    line: number
+): boolean {
+    // look up and down a bit — if we see contiguous @-lines around, treat as annotation region
+    const t = (n: number) =>
+        n >= 0 && n < doc.lineCount ? doc.lineAt(n).text.trim() : "";
+    const isAnnoOrBlank = (s: string) => s === "" || s.startsWith("@");
+
+    let upHasAnno = false;
+    for (let i = line; i >= Math.max(0, line - 10); i--) {
+        const s = t(i);
+        if (!isAnnoOrBlank(s)) break;
+        if (s.startsWith("@")) upHasAnno = true;
+    }
+
+    let downHasAnno = false;
+    for (let i = line; i <= Math.min(doc.lineCount - 1, line + 10); i++) {
+        const s = t(i);
+        if (!isAnnoOrBlank(s)) break;
+        if (s.startsWith("@")) downHasAnno = true;
+    }
+
+    return upHasAnno || downHasAnno;
+}
+
+// NEW: find the next declaration BELOW the current/annotation line
+function findNextDeclDown(
+    doc: vscode.TextDocument,
+    fromLine: number
+): { kind: ApexKind; line: number } | null {
+    // Skip the current annotation block and blank lines
+    let i = fromLine;
+    while (i < doc.lineCount) {
+        const s = doc.lineAt(i).text.trim();
+        if (s === "" || s.startsWith("@")) {
+            i++;
+            continue;
+        }
+        break;
+    }
+
+    // Look for a decl on this line or shortly after (handles signatures that start here)
+    const limit = Math.min(doc.lineCount - 1, i + 200);
+    for (let l = i; l <= limit; l++) {
+        const k = apexKindAtLine(doc, l);
+        if (k) return { kind: k, line: l };
+    }
+    return null;
 }
 
 function findTopOfJsDecoratorBlock(
