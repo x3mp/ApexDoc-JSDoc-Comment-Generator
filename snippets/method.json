@@ -5,8 +5,10 @@
     "* @param objectName the name of the object to look up",
     "* @param fieldName the name of the field to look up",
     "* @return ${2:What is returned}",
+    "* @throws ${3:ExceptionName} ${4:Description of an exception thrown by the method}",
     "* @example",
     "* Account a = new Account();",
+    "* @see ${5:RelatedFileOrType}",
     "*/"
   ]
 }

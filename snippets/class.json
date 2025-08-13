@@ -8,6 +8,7 @@
     "* @group-content OPTIONAL",
     "*",
     "* @description ${4:What does this class do?} name updating.",
+    "* @see ${5:RelatedFileOrType}",
     "*/"
   ]
 }
