@@ -1,0 +1,10 @@
+{
+    "body": [
+        "/**",
+        " * @file",
+        " * @description ${1:File overview}",
+        " * @author ${2:Your Name}",
+        " * @date ${3:${CURRENT_YEAR}-${CURRENT_MONTH}-${CURRENT_DATE}}",
+        " */"
+    ]
+}

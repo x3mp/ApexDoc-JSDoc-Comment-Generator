@@ -3,7 +3,12 @@ import * as path from "path";
 import * as fs from "fs";
 
 type ApexKind = "class" | "method" | "constructor" | "property" | "enumValue";
-type JsKind = "jsClass" | "jsFunction" | "jsMethod" | "jsProperty";
+type JsKind =
+    | "jsClass"
+    | "jsFunction"
+    | "jsMethod"
+    | "jsProperty"
+    | "jsVariable";
 
 export function activate(context: vscode.ExtensionContext) {
     // One command for both Apex & JS/TS
@@ -21,39 +26,47 @@ export function activate(context: vscode.ExtensionContext) {
                 const decl = detectApexKindAndLine(document, position.line);
                 const kind: ApexKind = decl?.kind ?? "class";
 
-                const items: vscode.CompletionItem[] = [];
+                const suggestions: vscode.CompletionItem[] = [];
 
-                // Common tags (keep @see suggestion-only; not in templates)
-                const common = [
+                const apexTags = [
                     "@description",
-                    "@see",
                     "@example",
                     "@author",
                     "@date",
                     "@group",
                     "@group-content",
+                    "@see",
                 ];
-                for (const tag of common)
-                    items.push(tagItem(tag, document, position));
 
+                // Base tags
+                for (const tag of apexTags) {
+                    suggestions.push(tagItem(tag, document, position));
+                }
+
+                // Kind-specific
                 if (kind === "method" || kind === "constructor") {
-                    ["@param", "@return", "@throws"].forEach((t) =>
-                        items.push(tagItem(t, document, position))
-                    );
+                    for (const tag of ["@param", "@return", "@throws"]) {
+                        suggestions.push(tagItem(tag, document, position));
+                    }
                 } else if (
                     kind === "property" ||
                     kind === "enumValue" ||
                     kind === "class"
                 ) {
-                    items.push(tagItem("@description", document, position));
+                    suggestions.push(
+                        tagItem("@description", document, position)
+                    );
                 }
 
                 // Inline link helpers
-                items.push(snippetItem("<<TypeName>>", "<<${1:TypeName}>>"));
-                items.push(
+                suggestions.push(
+                    snippetItem("<<TypeName>>", "<<${1:TypeName}>>")
+                );
+                suggestions.push(
                     snippetItem("{@link TypeName}", "{@link ${1:TypeName}}")
                 );
-                return items;
+
+                return suggestions;
             },
         },
         "@",
@@ -69,23 +82,35 @@ export function activate(context: vscode.ExtensionContext) {
             provideCompletionItems(document, position) {
                 if (!insideDocBlock(document, position.line)) return;
 
-                const items: vscode.CompletionItem[] = [];
-                [
+                const suggestions: vscode.CompletionItem[] = [];
+
+                const jsdocTags = [
                     "@description",
                     "@param",
                     "@returns",
                     "@throws",
+                    "@type",
+                    "@typedef",
+                    "@property",
+                    "@private",
+                    "@public",
+                    "@readonly",
+                    "@deprecated",
                     "@see",
                     "@example",
-                    "@deprecated",
-                ].forEach((tag) =>
-                    items.push(tagItem(tag, document, position))
-                );
+                    "@async",
+                ];
 
-                items.push(
+                for (const tag of jsdocTags) {
+                    suggestions.push(tagItem(tag, document, position));
+                }
+
+                // Inline link helper
+                suggestions.push(
                     snippetItem("{@link TypeOrURL}", "{@link ${1:TypeOrURL}}")
                 );
-                return items;
+
+                return suggestions;
             },
         },
         "@",
@@ -443,26 +468,55 @@ function findTopOfAnnotationBlock(
 
 async function generateJsDoc(editor: vscode.TextEditor, here: number) {
     const doc = editor.document;
+
+    // Aura helper file header (unchanged)
+    const auraInfo = getAuraHelperPreambleInfo(doc);
+    if (auraInfo.isAuraHelper) {
+        if (!hasLeadingJSDocHeader(doc, auraInfo.firstCodeLine)) {
+            const headerLines = loadSnippetBody("JSDoc", "file");
+            await editor.insertSnippet(
+                new vscode.SnippetString(headerLines.join("\n") + "\n\n"),
+                new vscode.Position(0, 0)
+            );
+            return;
+        }
+    }
+
     const detected = detectJsKindAndLine(doc, here);
     if (!detected) {
         vscode.window.showInformationMessage(
-            "JSDoc: Could not detect a class/function/method/property here."
+            "JSDoc: Could not detect a class/function/method/property/variable here."
         );
         return;
     }
     const { kind, line: declLine } = detected;
 
-    // Pick base template from /snippets/JSDoc
+    // NEW: variables
+    if (kind === "jsVariable") {
+        let lines = loadSnippetBody("JSDoc", "variable"); // uses @type {any}
+        const type = inferJsVariableType(doc, declLine) || "any";
+        // Replace the first {any} occurrence
+        lines = lines.map((l) =>
+            l.replace("{${1:any}}", `{${type}}`).replace("{any}", `{${type}}`)
+        );
+        const insertLine = Math.max(0, declLine);
+        await editor.insertSnippet(
+            new vscode.SnippetString(lines.join("\n") + "\n"),
+            new vscode.Position(insertLine, 0)
+        );
+        return;
+    }
+
+    // functions/methods (existing logic)
     const baseName =
         kind === "jsFunction"
             ? "functions"
             : kind === "jsMethod"
             ? "method"
-            : "method"; // fallback for class/property (keeps it minimal)
+            : "method"; // fallback for class/property
 
     let lines = loadSnippetBody("JSDoc", baseName);
 
-    // If function/method: auto-generate @param {any} name description and ensure @returns
     if (kind === "jsFunction" || kind === "jsMethod") {
         const params = getJsParams(doc, declLine);
         if (params.length) {
@@ -478,7 +532,6 @@ async function generateJsDoc(editor: vscode.TextEditor, here: number) {
         }
     }
 
-    // Insert above decorators (e.g., @api, @wire, @track)
     const insertLine = findTopOfJsDecoratorBlock(doc, declLine);
     await editor.insertSnippet(
         new vscode.SnippetString(lines.join("\n") + "\n"),
@@ -527,9 +580,12 @@ function jsKindAtLine(text: string): JsKind | null {
         /^\s*const\s+[A-Za-z_]\w*\s*=\s*\(/.test(t) ||
         /^\s*const\s+[A-Za-z_]\w*\s*=\s*async\s*\(/.test(t) ||
         /^\s*const\s+[A-Za-z_]\w*\s*=\s*\w*\s*=>\s*\(/.test(t)
-    ) {
+    )
         return "jsFunction";
-    }
+
+    // variable (const/let/var foo [: Type]? = ...)
+    if (/^\s*(const|let|var)\s+[A-Za-z_]\w*\s*([=:]|$)/.test(t))
+        return "jsVariable";
 
     // property (rough heuristic)
     if (/^\s*(public|private|protected)?\s*[A-Za-z_]\w*\s*[:=]\s*/.test(t))
@@ -565,24 +621,27 @@ function replaceOrInjectJsParamsAndReturns(
     lines: string[],
     generatedParams: string[]
 ): string[] {
-    // Replace any existing " * @param " lines; if none, inject after @description
+    // Replace any existing @param lines regardless of leading "*" or spaces
     let replaced = false;
     const out: string[] = [];
     for (const line of lines) {
-        if (line.trim().startsWith("* @param")) {
+        const trimmed = line.trim();
+        if (/^\*?\s*@param\b/.test(trimmed)) {
             if (!replaced) out.push(...generatedParams);
             replaced = true;
             continue;
         }
         out.push(line);
     }
+
+    // If none were replaced, inject after @description
     let result = out;
     if (!replaced) {
         const injected: string[] = [];
         let didInject = false;
         for (const line of out) {
             injected.push(line);
-            if (!didInject && line.trim().startsWith("* @description")) {
+            if (!didInject && /^\s*\*\s*@description\b/.test(line)) {
                 injected.push(...generatedParams);
                 didInject = true;
             }
@@ -590,16 +649,17 @@ function replaceOrInjectJsParamsAndReturns(
         result = injected;
     }
 
-    // Ensure a @returns exists
-    const hasReturns = result.some((l) => l.trim().startsWith("* @returns"));
+    // Ensure a single @returns exists
+    const hasReturns = result.some((l) => l.trim().match(/^\*?\s*@returns\b/));
     if (!hasReturns) {
-        const idxExample = result.findIndex((l) =>
-            l.trim().startsWith("* @example")
-        );
         const returnsLine = " * @returns {any} ${3:What is returned}";
+        const idxExample = result.findIndex((l) =>
+            l.trim().match(/^\*\s*@example\b/)
+        );
         if (idxExample !== -1) {
             result.splice(idxExample, 0, returnsLine);
         } else {
+            // before closing */
             const closeIdx = Math.max(0, result.length - 1);
             result.splice(closeIdx, 0, returnsLine);
         }
@@ -608,13 +668,13 @@ function replaceOrInjectJsParamsAndReturns(
 }
 
 function ensureReturnsInJSDoc(lines: string[]): string[] {
-    const hasReturns = lines.some((l) => l.trim().startsWith("* @returns"));
+    const hasReturns = lines.some((l) => l.trim().match(/^\*?\s*@returns\b/));
     if (hasReturns) return lines;
     const result = [...lines];
-    const idxExample = result.findIndex((l) =>
-        l.trim().startsWith("* @example")
-    );
     const returnsLine = " * @returns {any} ${2:What is returned}";
+    const idxExample = result.findIndex((l) =>
+        l.trim().match(/^\*\s*@example\b/)
+    );
     if (idxExample !== -1) {
         result.splice(idxExample, 0, returnsLine);
     } else {
@@ -691,4 +751,88 @@ function findTopOfJsDecoratorBlock(
         break;
     }
     return Math.max(0, i + 1);
+}
+
+function inferJsVariableType(
+    doc: vscode.TextDocument,
+    line: number
+): string | null {
+    const text = stripLineComments(doc.lineAt(line).text);
+
+    // TS annotation: const foo: Type = ...
+    const ann = text.match(/^\s*(const|let|var)\s+[A-Za-z_]\w*\s*:\s*([^=;]+)/);
+    if (ann) {
+        const tsType = ann[2].trim();
+        // Keep simple TS types verbatim (string, number, boolean, any, unknown, object, Array<...>, ...).
+        return tsType;
+    }
+
+    // Initializer inference
+    const init = text.match(/=\s*(.+?)(;|$)/);
+    if (!init) return null;
+    const rhs = init[1].trim();
+
+    // String
+    if (/^(['"]).*\1$/.test(rhs)) return "string";
+    // Number
+    if (/^[+-]?(\d+(\.\d+)?|\.\d+)(e[+-]?\d+)?$/i.test(rhs)) return "number";
+    // Boolean
+    if (/^(true|false)\b/.test(rhs)) return "boolean";
+    // Array literal
+    if (/^\[.*\]$/.test(rhs)) return "Array<any>";
+    // Object literal
+    if (/^\{.*\}$/.test(rhs)) return "Object";
+    // Function / arrow
+    if (
+        /^function\b/.test(rhs) ||
+        /^\(*[A-Za-z0-9_,\s\{\}\[\]]*\)*\s*=>/.test(rhs)
+    )
+        return "Function";
+    // new Type(...)
+    const ctor = rhs.match(/^new\s+([A-Za-z_]\w*)\s*\(/);
+    if (ctor) return ctor[1];
+
+    return null;
+}
+
+/** Detects if the file starts like an Aura helper: "({ ... })" */
+function getAuraHelperPreambleInfo(doc: vscode.TextDocument): {
+    isAuraHelper: boolean;
+    firstCodeLine: number;
+} {
+    let i = 0;
+
+    // Skip BOM / shebang / leading blank lines / leading single-line comments
+    if (doc.lineCount === 0) return { isAuraHelper: false, firstCodeLine: 0 };
+
+    // Skip shebang
+    if (doc.lineAt(0).text.startsWith("#!")) i++;
+
+    // Skip blank and // comments at the very top
+    while (i < doc.lineCount) {
+        const t = doc.lineAt(i).text.trim();
+        if (t === "" || t.startsWith("//")) {
+            i++;
+            continue;
+        }
+        break;
+    }
+
+    const first = doc.lineAt(i).text.trim();
+    // Typical Aura helper: starts with "({" (maybe spaces between)
+    const isAura = /^\(\s*\{/.test(first);
+    return { isAuraHelper: isAura, firstCodeLine: i };
+}
+
+function hasLeadingJSDocHeader(
+    doc: vscode.TextDocument,
+    beforeLine: number
+): boolean {
+    const start = 0;
+    for (let i = start; i < Math.min(beforeLine, doc.lineCount); i++) {
+        const t = doc.lineAt(i).text.trim();
+        if (t.startsWith("/**")) return true;
+        if (t && !t.startsWith("//")) break; // hit non-comment code before a header
+    }
+    return false;
 }
