@@ -2,7 +2,7 @@
   "name": "apexdoc",
   "displayName": "ApexDoc",
   "description": "An lightweight extension to generate ApexDoc comments with the click of a button.",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "license": "MIT",
   "engines": {
     "vscode": "^1.103.0"
@@ -21,32 +21,14 @@
   "contributes": {
     "commands": [
       {
-        "command": "apexdoc.insertClassDoc",
-        "title": "Insert ApexDoc for Class"
-      },
-      {
-        "command": "apexdoc.insertMethodDoc",
-        "title": "Insert ApexDoc for Method"
-      },
-      {
-        "command": "apexdoc.insertPropDoc",
-        "title": "Insert ApexDoc for Property"
+        "command": "apexdoc.generate",
+        "title": "Generate ApexDoc comment"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "command": "apexdoc.insertClassDoc",
-          "when": "editorLangId == apex",
-          "group": "navigation"
-        },
-        {
-          "command": "apexdoc.insertMethodDoc",
-          "when": "editorLangId == apex",
-          "group": "navigation"
-        },
-        {
-          "command": "apexdoc.insertPropDoc",
+          "command": "apexdoc.generate",
           "when": "editorLangId == apex",
           "group": "navigation"
         }
