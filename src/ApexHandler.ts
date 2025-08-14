@@ -21,39 +21,39 @@ export function registerApexProviders(context: vscode.ExtensionContext) {
 
                 const suggestions: vscode.CompletionItem[] = [];
 
-                const apexTags = [
-                    "@description",
-                    "@example",
-                    "@author",
-                    "@date",
-                    "@group",
-                    "@group-content",
-                    "@see",
-                ];
-                for (const tag of apexTags) {
+                // Context-aware tags per kind
+                const byKind: Record<ApexKind, string[]> = {
+                    class: [
+                        "@description",
+                        "@group",
+                        "@group-content",
+                        "@example",
+                        "@see",
+                        "@author",
+                        "@date",
+                    ],
+                    method: [
+                        "@description",
+                        "@param",
+                        "@return",
+                        "@throws",
+                        "@example",
+                        "@see",
+                    ],
+                    constructor: [
+                        "@description",
+                        "@param",
+                        "@throws",
+                        "@example",
+                        "@see",
+                    ],
+                    property: ["@description", "@see"],
+                    enumValue: ["@description", "@see"],
+                };
+
+                for (const tag of byKind[kind]) {
                     suggestions.push(
                         tagItem(tag, document, position, "ApexDoc tag")
-                    );
-                }
-
-                if (kind === "method" || kind === "constructor") {
-                    for (const tag of ["@param", "@return", "@throws"]) {
-                        suggestions.push(
-                            tagItem(tag, document, position, "ApexDoc tag")
-                        );
-                    }
-                } else if (
-                    kind === "property" ||
-                    kind === "enumValue" ||
-                    kind === "class"
-                ) {
-                    suggestions.push(
-                        tagItem(
-                            "@description",
-                            document,
-                            position,
-                            "ApexDoc tag"
-                        )
                     );
                 }
 
