@@ -1,7 +1,7 @@
 {
-    "name": "apexdoc",
-    "displayName": "ApexDoc",
-    "description": "An lightweight extension to generate ApexDoc comments with the click of a button.",
+    "name": "apexdoc-jsdoc",
+    "displayName": "ApexDoc & JSDoc Comment Generator",
+    "description": "A lightweight Visual Studio Code extension to automatically generate documentation comments for Apex and JavaScript/TypeScript files.",
     "version": "0.1.1",
     "license": "MIT",
     "engines": {
