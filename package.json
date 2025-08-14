@@ -1,15 +1,15 @@
 {
-    "name": "apexdoc",
-    "displayName": "ApexDoc",
-    "description": "An lightweight extension to generate ApexDoc comments with the click of a button.",
-    "version": "0.1.0",
+    "name": "apexdoc-jsdoc",
+    "displayName": "ApexDoc / JSDoc",
+    "description": "An lightweight extension to generate ApexDoc and JSDoc comments with the click of a button.",
+    "version": "0.1.1",
     "license": "MIT",
     "engines": {
         "vscode": "^1.103.0"
     },
     "repository": {
         "type": "git",
-        "url": "https://github.com/roelSarawak/ApexDoc.git"
+        "url": "https://github.com/x3mp/ApexDoc-JSDoc"
     },
     "categories": [
         "Other"
