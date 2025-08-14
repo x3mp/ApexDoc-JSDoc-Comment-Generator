@@ -117,7 +117,7 @@ export function getApexParams(
     if (start === -1) return [];
     let sig = "";
     let ended = false;
-    const max = Math.min(doc.lineCount - 1, start + 50);
+    const max = Math.min(doc.lineCount - 1, start + 35);
     for (let i = start; i <= max; i++) {
         const lineText = stripLineComments(doc.lineAt(i).text);
         sig += lineText + " ";
