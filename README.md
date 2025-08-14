@@ -27,7 +27,7 @@ A lightweight Visual Studio Code extension to **automatically generate documenta
 
 1. Open your VS Extensions and search for ApexDoc & JSDoc Comment Generator.
 2. Install the extension.
-3. You're all ready to go!
+3. You're ready to go!
 
 ## ⚙️ VS Code Settings
 

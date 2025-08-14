@@ -3,6 +3,7 @@
     "displayName": "ApexDoc & JSDoc Comment Generator",
     "description": "A lightweight Visual Studio Code extension to automatically generate documentation comments for Apex and JavaScript/TypeScript files.",
     "version": "0.1.1",
+    "publisher": "x3mp",
     "license": "MIT",
     "engines": {
         "vscode": "^1.103.0"
