@@ -469,9 +469,10 @@ function findTopOfAnnotationBlock(
 async function generateJsDoc(editor: vscode.TextEditor, here: number) {
     const doc = editor.document;
 
-    // Aura helper file header (unchanged)
-    const auraInfo = getAuraHelperPreambleInfo(doc);
-    if (auraInfo.isAuraHelper) {
+    // 1) If cursor is on the Aura helper start line "({", always insert file header (once)
+    const thisLine = doc.lineAt(here).text.trim();
+    if (/^\(\s*\{/.test(thisLine)) {
+        const auraInfo = getAuraHelperPreambleInfo(doc);
         if (!hasLeadingJSDocHeader(doc, auraInfo.firstCodeLine)) {
             const headerLines = loadSnippetBody("JSDoc", "file");
             await editor.insertSnippet(
@@ -480,43 +481,62 @@ async function generateJsDoc(editor: vscode.TextEditor, here: number) {
             );
             return;
         }
+        // If a header already exists, fall through to generate a function/method doc if applicable
     }
 
+    // 2) Try to detect a class/function/method/property/variable at the cursor
     const detected = detectJsKindAndLine(doc, here);
+
+    // 3) If nothing detected, allow inserting a FILE HEADER only when cursor is
+    //    at/above the first code line of an Aura helper file.
     if (!detected) {
+        const auraInfo = getAuraHelperPreambleInfo(doc);
+        const atTop = here <= auraInfo.firstCodeLine;
+        if (
+            auraInfo.isAuraHelper &&
+            atTop &&
+            !hasLeadingJSDocHeader(doc, auraInfo.firstCodeLine)
+        ) {
+            const headerLines = loadSnippetBody("JSDoc", "file");
+            await editor.insertSnippet(
+                new vscode.SnippetString(headerLines.join("\n") + "\n\n"),
+                new vscode.Position(0, 0)
+            );
+            return;
+        }
         vscode.window.showInformationMessage(
             "JSDoc: Could not detect a class/function/method/property/variable here."
         );
         return;
     }
+
     const { kind, line: declLine } = detected;
 
-    // NEW: variables
+    // 4) Variable doc: insert @type with best-effort type inference or TS annotation
     if (kind === "jsVariable") {
-        let lines = loadSnippetBody("JSDoc", "variable"); // uses @type {any}
+        let lines = loadSnippetBody("JSDoc", "variable"); // expects @type {any}
         const type = inferJsVariableType(doc, declLine) || "any";
-        // Replace the first {any} occurrence
         lines = lines.map((l) =>
             l.replace("{${1:any}}", `{${type}}`).replace("{any}", `{${type}}`)
         );
-        const insertLine = Math.max(0, declLine);
         await editor.insertSnippet(
             new vscode.SnippetString(lines.join("\n") + "\n"),
-            new vscode.Position(insertLine, 0)
+            new vscode.Position(declLine, 0)
         );
         return;
     }
 
-    // functions/methods (existing logic)
+    // 5) Base template selection (functions/methods get richer templates)
     const baseName =
         kind === "jsFunction"
             ? "functions"
             : kind === "jsMethod"
             ? "method"
-            : "method"; // fallback for class/property
+            : "method"; // minimal fallback for class/property
 
     let lines = loadSnippetBody("JSDoc", baseName);
 
+    // 6) For functions/methods: auto @param {any} name ... and ensure a single @returns
     if (kind === "jsFunction" || kind === "jsMethod") {
         const params = getJsParams(doc, declLine);
         if (params.length) {
@@ -532,6 +552,7 @@ async function generateJsDoc(editor: vscode.TextEditor, here: number) {
         }
     }
 
+    // 7) Insert above decorators (LWC: @api/@wire/@track), or just above decl line for others
     const insertLine = findTopOfJsDecoratorBlock(doc, declLine);
     await editor.insertSnippet(
         new vscode.SnippetString(lines.join("\n") + "\n"),
