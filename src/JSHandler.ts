@@ -9,6 +9,7 @@ import {
     getAuraHelperPreambleInfo,
     hasLeadingJSDocHeader,
     inferJsVariableType,
+    JsKind,
 } from "./JSHelpers";
 import { insideDocBlock, snippetItem, tagItem } from "./SharedHelpers";
 
@@ -19,31 +20,66 @@ export function registerJsProviders(context: vscode.ExtensionContext) {
             provideCompletionItems(document, position) {
                 if (!insideDocBlock(document, position.line)) return;
 
+                // Detect kind around the cursor for better suggestions
+                const decl = detectJsKindAndLine(document, position.line);
+                const kind = decl?.kind ?? "jsFunction";
+
                 const suggestions: vscode.CompletionItem[] = [];
-                const jsdocTags = [
-                    "@description",
-                    "@param",
-                    "@returns",
-                    "@throws",
-                    "@type",
-                    "@typedef",
-                    "@property",
-                    "@private",
-                    "@public",
-                    "@readonly",
-                    "@deprecated",
-                    "@see",
-                    "@example",
-                    "@async",
-                ];
-                for (const tag of jsdocTags) {
+
+                // Context-aware tags per JS kind
+                const byKind: Record<JsKind, string[]> = {
+                    jsFunction: [
+                        "@description",
+                        "@param",
+                        "@returns",
+                        "@throws",
+                        "@example",
+                        "@see",
+                        "@async",
+                        "@deprecated",
+                    ],
+                    jsMethod: [
+                        "@description",
+                        "@param",
+                        "@returns",
+                        "@throws",
+                        "@example",
+                        "@see",
+                        "@async",
+                        "@deprecated",
+                    ],
+                    jsVariable: [
+                        "@description",
+                        "@type",
+                        "@private",
+                        "@public",
+                        "@readonly",
+                        "@deprecated",
+                        "@see",
+                    ],
+                    jsClass: ["@description", "@deprecated", "@see"],
+                    jsProperty: [
+                        "@description",
+                        "@type",
+                        "@private",
+                        "@public",
+                        "@readonly",
+                        "@deprecated",
+                        "@see",
+                    ],
+                };
+
+                for (const tag of byKind[kind]) {
                     suggestions.push(
                         tagItem(tag, document, position, "JSDoc tag")
                     );
                 }
+
+                // Inline link helper
                 suggestions.push(
                     snippetItem("{@link TypeOrURL}", "{@link ${1:TypeOrURL}}")
                 );
+
                 return suggestions;
             },
         },
@@ -62,7 +98,7 @@ export async function generateJsFileHeader(editor: vscode.TextEditor) {
     ) {
         const headerLines = loadSnippetBody("JSDoc", "file");
         await editor.insertSnippet(
-            new vscode.SnippetString(headerLines.join("\n") + "\n\n"),
+            new vscode.SnippetString(headerLines.join("\n") + "\n"),
             new vscode.Position(0, 0)
         );
     } else {
@@ -82,7 +118,7 @@ export async function generateJsDoc(editor: vscode.TextEditor, here: number) {
         if (!hasLeadingJSDocHeader(doc, auraInfo.firstCodeLine)) {
             const headerLines = loadSnippetBody("JSDoc", "file");
             await editor.insertSnippet(
-                new vscode.SnippetString(headerLines.join("\n") + "\n\n"),
+                new vscode.SnippetString(headerLines.join("\n") + "\n"),
                 new vscode.Position(0, 0)
             );
             return;
@@ -103,7 +139,7 @@ export async function generateJsDoc(editor: vscode.TextEditor, here: number) {
         ) {
             const headerLines = loadSnippetBody("JSDoc", "file");
             await editor.insertSnippet(
-                new vscode.SnippetString(headerLines.join("\n") + "\n\n"),
+                new vscode.SnippetString(headerLines.join("\n") + "\n"),
                 new vscode.Position(0, 0)
             );
             return;
@@ -124,7 +160,7 @@ export async function generateJsDoc(editor: vscode.TextEditor, here: number) {
             l.replace("{${1:any}}", `{${type}}`).replace("{any}", `{${type}}`)
         );
         await editor.insertSnippet(
-            new vscode.SnippetString(lines.join("\n") + "\n"),
+            new vscode.SnippetString(lines.join("\n")),
             new vscode.Position(declLine, 0)
         );
         return;
@@ -159,7 +195,7 @@ export async function generateJsDoc(editor: vscode.TextEditor, here: number) {
     // Insert above decorators for LWC, or just above declaration
     const insertLine = findTopOfJsDecoratorBlock(doc, declLine);
     await editor.insertSnippet(
-        new vscode.SnippetString(lines.join("\n") + "\n"),
+        new vscode.SnippetString(lines.join("\n")),
         new vscode.Position(insertLine, 0)
     );
 }
