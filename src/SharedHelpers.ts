@@ -4,13 +4,21 @@ export function insideDocBlock(
     doc: vscode.TextDocument,
     line: number
 ): boolean {
-    const trimmed = doc.lineAt(line).text.trim();
-    if (trimmed.startsWith("/**") || trimmed.startsWith("*")) return true;
-    const limit = Math.max(0, line - 100);
-    for (let i = line; i >= limit; i--) {
+    const text = doc.lineAt(line).text;
+
+    // Fast paths: opening line or any continuation '*'
+    if (text.includes("/**")) return true;
+    if (/^\s*\*/.test(text)) return true;
+
+    // Walk up a bit: we’re inside if we see '/**' before '*/' or real code
+    const start = Math.max(0, line - 80);
+    for (let i = line; i >= start; i--) {
         const t = doc.lineAt(i).text;
-        if (t.includes("*/")) return false;
-        if (t.includes("/**")) return true;
+        if (t.includes("*/")) return false; // closed before open -> not inside
+        if (t.includes("/**")) return true; // found opener
+        if (t.trim() !== "" && !/^\s*\/?\*/.test(t))
+            // hit non-comment, non-blank
+            return false;
     }
     return false;
 }
