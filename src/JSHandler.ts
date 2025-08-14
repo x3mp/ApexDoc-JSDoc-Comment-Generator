@@ -159,6 +159,7 @@ export async function generateJsDoc(editor: vscode.TextEditor, here: number) {
         lines = lines.map((l) =>
             l.replace("{${1:any}}", `{${type}}`).replace("{any}", `{${type}}`)
         );
+
         await editor.insertSnippet(
             new vscode.SnippetString(lines.join("\n")),
             new vscode.Position(declLine, 0)
@@ -195,7 +196,7 @@ export async function generateJsDoc(editor: vscode.TextEditor, here: number) {
     // Insert above decorators for LWC, or just above declaration
     const insertLine = findTopOfJsDecoratorBlock(doc, declLine);
     await editor.insertSnippet(
-        new vscode.SnippetString(lines.join("\n")),
+        new vscode.SnippetString(lines.join("\n") + "\n"),
         new vscode.Position(insertLine, 0)
     );
 }
